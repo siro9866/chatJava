@@ -1,30 +1,25 @@
 package chat;
 
-// ===== 2. 클라이언트 UI 및 네트워크: ChatClient.java =====
 import javax.swing.*;
 import javax.swing.text.DefaultCaret;
 import java.awt.*;
 import java.awt.event.*;
 import java.io.*;
 import java.net.Socket;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 
 public class ChatClient {
-    private static String HOST = "localhost"; // 서버 IP
-    private static final int PORT = 70000;
-    private final String filePath = "C:\\dev\\chat\\files";
+    private static String HOST = "192.168.10.202";
+    private static final int PORT = 12345;
     private JTextArea chatArea;
     private JTextArea inputArea;
     private JButton sendBtn, fileBtn;
     private Socket socket;
     private DataOutputStream dos;
     private String username;
-    private File lastSentFile;
 
     public static void main(String[] args) {
-        Object input = JOptionPane.showInputDialog(null, "서버 IP를 입력하세요:", "서버 접속", JOptionPane.QUESTION_MESSAGE, null, null, "192.168.10.202");
-        HOST = (input == null || input.toString().trim().isEmpty()) ? "192.168.10.202" : input.toString().trim();
+//        Object input = JOptionPane.showInputDialog(null, "서버 IP를 입력하세요:", "서버 접속", JOptionPane.QUESTION_MESSAGE, null, null, "192.168.10.202");
+//        HOST = (input == null || input.toString().trim().isEmpty()) ? "localhost" : input.toString().trim();
         SwingUtilities.invokeLater(ChatClient::new);
     }
 
@@ -51,7 +46,6 @@ public class ChatClient {
         chatArea.setLineWrap(true);
         chatArea.setWrapStyleWord(true);
         ((DefaultCaret) chatArea.getCaret()).setUpdatePolicy(DefaultCaret.ALWAYS_UPDATE);
-        chatArea.setText(ChatUtils.loadChat());
 
         chatArea.addMouseListener(new MouseAdapter() {
             @Override
@@ -62,31 +56,19 @@ public class ChatClient {
                     String selectedLine = chatArea.getText(chatArea.getLineStartOffset(line), chatArea.getLineEndOffset(line) - chatArea.getLineStartOffset(line)).trim();
                     if (selectedLine.startsWith("[파일 수신됨:")) {
                         String fileName = selectedLine.substring(selectedLine.indexOf(":") + 1, selectedLine.lastIndexOf("]")).trim();
-                        File sourceFile = new File(filePath + File.separator + fileName);
-                        if (sourceFile.exists()) {
-                            JFileChooser chooser = new JFileChooser();
-                            chooser.setSelectedFile(new File(fileName));
-                            if (chooser.showSaveDialog(null) == JFileChooser.APPROVE_OPTION) {
-                                File destFile = chooser.getSelectedFile();
-                                try {
-                                    java.nio.file.Files.copy(sourceFile.toPath(), destFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                                    JOptionPane.showMessageDialog(null, "파일이 저장되었습니다: " + destFile.getAbsolutePath());
-                                } catch (IOException ex) {
-                                    ex.printStackTrace();
-                                    JOptionPane.showMessageDialog(null, "파일 저장 중 오류가 발생했습니다.");
-                                }
-                            }
-                        } else {
-                            JOptionPane.showMessageDialog(null, "파일을 찾을 수 없습니다.");
+                        JFileChooser chooser = new JFileChooser();
+                        chooser.setSelectedFile(new File(fileName));
+                        if (chooser.showSaveDialog(null) == JFileChooser.APPROVE_OPTION) {
+                            File destFile = chooser.getSelectedFile();
+                            // 서버에 파일 다운로드 요청
+                            requestFileDownload(fileName, destFile);
                         }
                     }
-
                 } catch (Exception ex) {
                     ex.printStackTrace();
                 }
             }
         });
-
 
         JScrollPane scrollPane = new JScrollPane(chatArea);
 
@@ -109,15 +91,11 @@ public class ChatClient {
         fileBtn = new JButton("파일 전송");
         fileBtn.addActionListener(e -> sendFile());
 
-//        downloadBtn = new JButton("내가 보낸 파일 저장");
-//        downloadBtn.addActionListener(e -> downloadMyFile());
-
         JPanel bottomPanel = new JPanel();
         bottomPanel.setLayout(new BorderLayout());
         JPanel buttonPanel = new JPanel();
         buttonPanel.add(sendBtn);
         buttonPanel.add(fileBtn);
-//        buttonPanel.add(downloadBtn);
         bottomPanel.add(inputScroll, BorderLayout.CENTER);
         bottomPanel.add(buttonPanel, BorderLayout.EAST);
 
@@ -139,24 +117,20 @@ public class ChatClient {
                         if (type.equals("text")) {
                             String msg = dis.readUTF();
                             chatArea.append(msg + "\n");
-                            ChatUtils.saveChat(msg);
                         } else if (type.equals("file")) {
                             String fileName = dis.readUTF();
                             long length = dis.readLong();
                             byte[] buffer = new byte[(int) length];
                             dis.readFully(buffer);
-                            File file = new File(filePath);
-                            file.mkdirs();
-                            FileOutputStream fos = new FileOutputStream(new File(file, fileName));
-                            fos.write(buffer);
-                            fos.close();
+
                             String msg = "[파일 수신됨: " + fileName + "]";
                             chatArea.append(msg + "\n");
-                            ChatUtils.saveChat(msg);
                         }
                     }
                 } catch (IOException e) {
                     e.printStackTrace();
+                    JOptionPane.showMessageDialog(null, "서버와의 연결이 끊어졌습니다.");
+                    System.exit(1);
                 }
             }).start();
 
@@ -184,44 +158,33 @@ public class ChatClient {
         JFileChooser chooser = new JFileChooser();
         if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) {
             File file = chooser.getSelectedFile();
-            lastSentFile = file;
             try {
                 byte[] data = new byte[(int) file.length()];
-                FileInputStream fis = new FileInputStream(file);
-                fis.read(data);
-                fis.close();
+                try (FileInputStream fis = new FileInputStream(file)) {
+                    fis.read(data);
+                }
 
                 dos.writeUTF("file");
                 dos.writeUTF(file.getName());
                 dos.writeLong(data.length);
                 dos.write(data);
                 dos.flush();
-
-                String msg = "[파일 전송됨: " + file.getName() + "]";
-                chatArea.append(msg + "\n");
-                ChatUtils.saveChat(msg);
             } catch (IOException e) {
                 e.printStackTrace();
+                JOptionPane.showMessageDialog(null, "파일 전송 중 오류가 발생했습니다.", "오류", JOptionPane.ERROR_MESSAGE);
             }
         }
     }
 
-    private void downloadMyFile() {
-        if (lastSentFile == null) {
-            JOptionPane.showMessageDialog(null, "보낸 파일이 없습니다.");
-            return;
-        }
-        JFileChooser chooser = new JFileChooser();
-        chooser.setSelectedFile(new File(lastSentFile.getName()));
-        if (chooser.showSaveDialog(null) == JFileChooser.APPROVE_OPTION) {
-            File dest = chooser.getSelectedFile();
-            try {
-                Files.copy(lastSentFile.toPath(), dest.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                JOptionPane.showMessageDialog(null, "파일이 저장되었습니다: " + dest.getAbsolutePath());
-            } catch (IOException ex) {
-                ex.printStackTrace();
-                JOptionPane.showMessageDialog(null, "파일 저장 중 오류가 발생했습니다.");
-            }
+    private void requestFileDownload(String fileName, File destFile) {
+        // 향후 서버에서 파일 다운로드 기능 구현 시 사용할 메서드
+        try {
+            dos.writeUTF("download");
+            dos.writeUTF(fileName);
+            dos.flush();
+        } catch (IOException e) {
+            e.printStackTrace();
+            JOptionPane.showMessageDialog(null, "파일 다운로드 요청 중 오류가 발생했습니다.", "오류", JOptionPane.ERROR_MESSAGE);
         }
     }
 }
